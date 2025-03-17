@@ -1,0 +1,242 @@
+--[[ 
+    Backpack ESP Executor Script Universal
+    Made by Kenzi a Simple Script
+]]
+
+-------------------------
+-- Services & Variables
+-------------------------
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local CurrentCamera = Workspace.CurrentCamera
+
+-------------------------
+-- Bin Library (for tracking connections)
+-------------------------
+local Bin
+do
+	Bin = setmetatable({}, {
+		__tostring = function()
+			return "Bin"
+		end,
+	})
+	Bin.__index = Bin
+	function Bin.new(...)
+		local self = setmetatable({}, Bin)
+		return self:constructor(...) or self
+	end
+	function Bin:constructor() end
+	function Bin:add(item)
+		local node = { item = item }
+		if self.head == nil then
+			self.head = node
+		end
+		if self.tail then
+			self.tail.next = node
+		end
+		self.tail = node
+		return self
+	end
+	function Bin:destroy()
+		local head = self.head
+		while head do
+			local item = head.item
+			if type(item) == "function" then
+				item()
+			elseif typeof(item) == "RBXScriptConnection" then
+				item:Disconnect()
+			elseif type(item) == "thread" then
+				task.cancel(item)
+			elseif item.destroy ~= nil then
+				item:destroy()
+			elseif item.Destroy ~= nil then
+				item:Destroy()
+			end
+			head = head.next
+			self.head = head
+		end
+	end
+	function Bin:isEmpty()
+		return self.head == nil
+	end
+end
+
+-------------------------
+-- SafeGetService (for consistency)
+-------------------------
+local function SafeGetService(service)
+	return service
+end
+
+-------------------------
+-- Create the ScreenGui for ESP
+-------------------------
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.DisplayOrder = 10
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.Parent = SafeGetService(CoreGui)
+
+-------------------------
+-- BaseComponent (for common functionality)
+-------------------------
+local BaseComponent = {}
+do
+	BaseComponent.__index = BaseComponent
+	function BaseComponent.new(item)
+		local self = setmetatable({}, BaseComponent)
+		self.bin = Bin.new()
+		self.object = item
+		return self
+	end
+	function BaseComponent:destroy()
+		if self.bin then
+			self.bin:destroy()
+		end
+		if self.interface and self.interface.container then
+			self.interface.container:Destroy()
+		end
+	end
+end
+
+-------------------------
+-- BackpackComponent
+-- This component creates a UI element (a Frame with a TextLabel) that tracks a player's head.
+-- It updates the text to list the names of the items in that player's Backpack.
+-------------------------
+local BackpackComponent = {}
+do
+	setmetatable(BackpackComponent, {__index = BaseComponent})
+	BackpackComponent.__index = BackpackComponent
+	
+	function BackpackComponent.new(player)
+		local self = setmetatable(BaseComponent.new(player), BackpackComponent)
+		self.player = player
+		-- UI interface: a container Frame and a TextLabel
+		self.interface = {
+			container = Instance.new("Frame"),
+			label = Instance.new("TextLabel"),
+		}
+		self:initialize()
+		return self
+	end
+	
+	function BackpackComponent:initialize()
+		local container = self.interface.container
+		local label = self.interface.label
+
+		-- Configure the container
+		container.Visible = false
+		container.AnchorPoint = Vector2.new(0.5, 0)
+		container.BackgroundTransparency = 1
+		-- Initial size (will be updated dynamically)
+		container.Size = UDim2.new(0, 100, 0, 50)
+		container.Parent = ScreenGui
+
+		-- Configure the text label
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.Nunito
+		label.Text = self.player.Name .. "'s Backpack"
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.TextSize = 15
+		label.TextStrokeTransparency = 0.5
+		label.Size = UDim2.new(1, 0, 1, 0)
+		label.Parent = container
+
+		-- Update the UI every RenderStepped
+		self.bin:add(RunService.RenderStepped:Connect(function()
+			self:render()
+		end))
+	end
+	
+	function BackpackComponent:render()
+		local player = self.player
+		local character = player.Character
+		if character then
+			local head = character:FindFirstChild("Head")
+			if head then
+				-- Convert the head's world position to screen coordinates
+				local position, onScreen = CurrentCamera:WorldToViewportPoint(head.Position)
+				if onScreen and character:FindFirstChild("HumanoidRootPart") then
+					-- Dynamic scaling calculation (inspired by your snippet)
+					local scale = 1 / (position.Z * math.tan(math.rad(CurrentCamera.FieldOfView * 0.5)) * 2) * 1000
+					local width = math.floor(1 * scale)
+					local height = math.floor(3 * scale)
+					local x = math.floor(position.X)
+					local y = math.floor(position.Y)
+					local xPosition = math.floor(x - width * 0.5)
+					local yPosition = math.floor((y - height * 0.5) + (0.5 * scale))
+					self.interface.container.Size = UDim2.new(0, width, 0, height)
+					self.interface.container.Position = UDim2.new(0, xPosition, 0, yPosition)
+					self.interface.container.Visible = true
+
+					-- Update the text with the player's Backpack items
+					local backpack = player:FindFirstChild("Backpack")
+					if backpack then
+						local items = backpack:GetChildren()
+						local itemNames = {}
+						for _, item in ipairs(items) do
+							table.insert(itemNames, item.Name)
+						end
+						local displayText = player.Name .. "'s Backpack:\n" .. table.concat(itemNames, "\n")
+						self.interface.label.Text = displayText
+					else
+						self.interface.label.Text = player.Name .. "'s Backpack: (Unavailable)"
+					end
+				else
+					self.interface.container.Visible = false
+				end
+			else
+				self.interface.container.Visible = false
+			end
+		else
+			self:destroy()
+		end
+	end
+end
+
+-------------------------
+-- Manage Backpack ESP Components for All Players
+-------------------------
+local backpackComponents = {}
+
+local function addPlayerESP(player)
+	if not backpackComponents[player] then
+		backpackComponents[player] = BackpackComponent.new(player)
+	end
+	-- Reinitialize on respawn
+	player.CharacterAdded:Connect(function()
+		wait(1)  -- give the character a moment to load
+		if backpackComponents[player] then
+			backpackComponents[player]:destroy()
+		end
+		backpackComponents[player] = BackpackComponent.new(player)
+	end)
+end
+
+-- Add ESP for existing players
+for _, player in ipairs(Players:GetPlayers()) do
+	addPlayerESP(player)
+end
+
+-- Listen for new players joining
+Players.PlayerAdded:Connect(function(player)
+	addPlayerESP(player)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if backpackComponents[player] then
+		backpackComponents[player]:destroy()
+		backpackComponents[player] = nil
+	end
+end)
+
+-------------------------
+-- Notification
+-------------------------
+game:GetService("StarterGui"):SetCore("SendNotification", {
+	Title = "yerrrrrrrrr",
+	Text = "kenzis backpack esp activated for all players",
+	Duration = 5,
+})
